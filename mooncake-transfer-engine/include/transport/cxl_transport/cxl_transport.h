@@ -87,7 +87,13 @@ class CxlTransport : public Transport {
    private:
     void *cxl_base_addr;
     size_t cxl_dev_size;
-    char *cxl_dev_path;
+    const char *cxl_dev_path;
+
+    bool using_shm_ = false;    // true = 使用 /shm/* 共享内存后端, false = /dev/dax* 后端
+#ifdef USE_CUDA
+    bool shm_pinned_ = false;   // 是否 pin 成功了 CXL 内存
+#endif
+
 };
 }  // namespace mooncake
 

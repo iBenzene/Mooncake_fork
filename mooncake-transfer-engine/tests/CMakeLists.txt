@@ -18,6 +18,10 @@ if (USE_CXL)
     add_executable(cxl_transport_test cxl_transport_test.cpp)
     target_link_libraries(cxl_transport_test PUBLIC transfer_engine gtest gtest_main )
     add_test(NAME cxl_transport_test COMMAND cxl_transport_test)
+
+    add_executable(cxl_transport_test2 cxl_transport_test2.cpp)
+    target_link_libraries(cxl_transport_test2 PUBLIC transfer_engine gtest gtest_main )
+    add_test(NAME cxl_transport_test2 COMMAND cxl_transport_test2)
 endif()
 
 if (USE_NVMEOF)

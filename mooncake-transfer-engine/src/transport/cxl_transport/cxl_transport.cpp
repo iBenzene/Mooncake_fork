@@ -35,10 +35,29 @@
 #include <unistd.h>    // For open(), close(), read(), write()
 #include <sys/mman.h>  // For mmap, munmap
 
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <cerrno>
+
+#ifdef USE_CUDA
+#include <cuda.h>
+#include <cuda_runtime.h>
+#endif
+
 namespace mooncake {
 
+#ifdef USE_CUDA
+static bool isCudaMemory(void *addr) {
+    cudaPointerAttributes attributes;
+    auto status = cudaPointerGetAttributes(&attributes, addr);
+    if (status != cudaSuccess) return false;
+    if (attributes.type == cudaMemoryTypeDevice) return true;
+    return false;
+}
+#endif
+
 CxlTransport::CxlTransport() {
-    // cxl_dev_path = "/dev/dax0.0";
+    // cxl_dev_path = "/dev/dax0.0" or "/dev/shm/cxl";
     // cxl_dev_size = 1024 * 1024 * 1024;
     // get from env
     const char *env_cxl_dev_path = std::getenv("MC_CXL_DEV_PATH");
@@ -46,11 +65,24 @@ CxlTransport::CxlTransport() {
     if (env_cxl_dev_path) {
         LOG(INFO) << "MC_CXL_DEV_PATH: " << env_cxl_dev_path;
         cxl_dev_path = (char *)env_cxl_dev_path;
+        using_shm_ = (strncmp(cxl_dev_path, "/dev/shm/", 9) == 0);
         cxl_dev_size = cxlGetDeviceSize();
     }
 }
 
 CxlTransport::~CxlTransport() {
+#ifdef USE_CUDA
+    // 先 unpin 再 munmap
+    if (shm_pinned_) {
+        cudaError_t st = cudaHostUnregister(cxl_base_addr);
+        if (st != cudaSuccess) {
+            LOG(WARNING) << "cudaHostUnregister failed: "
+                         << cudaGetErrorString(st);
+        }
+        shm_pinned_ = false;
+    }
+#endif
+
     if (cxl_base_addr != nullptr && cxl_base_addr != MAP_FAILED &&
         cxl_dev_size != 0) {
         munmap(cxl_base_addr, cxl_dev_size);
@@ -70,6 +102,19 @@ size_t CxlTransport::cxlGetDeviceSize() {
             return static_cast<size_t>(val);
     } else {
         // try to read dev size from sys
+
+        if (using_shm_) {
+            struct stat st{};
+            if (::stat(cxl_dev_path, &st) == 0 && S_ISREG(st.st_mode)) {
+                if (st.st_size > 0) {
+                    LOG(INFO) << "Use existing shm file size: " << st.st_size;
+                    return static_cast<size_t>(st.st_size);
+                }
+            } else {
+                LOG(WARNING) << "MC_CXL_DEV_SIZE unset. Using default 1GiB.";
+                return (size_t)1ULL << 30;
+            }
+        }
 
         // find "dax*.*" in path
         std::regex dax_pattern(R"(dax\d+\.\d+)");
@@ -120,7 +165,30 @@ int CxlTransport::cxlMemcpy(void *dest, void *src, size_t size) {
     }
 
     // Perform the memory copy
+#ifdef USE_CUDA
+    bool is_dest_vram = isCudaMemory(dest);
+    bool is_src_vram  = isCudaMemory(src);
+
+    if (is_dest_vram || is_src_vram) {
+        cudaError_t st;
+        if (is_dest_vram) {
+            // Host(CXL/DRAM) -> Device(VRAM)
+            st = cudaMemcpy(dest, src, size, cudaMemcpyHostToDevice);
+        } else {
+            // Device(VRAM) -> Host(CXL/DRAM)
+            st = cudaMemcpy(dest, src, size, cudaMemcpyDeviceToHost);
+        }
+        if (st != cudaSuccess) {
+            LOG(ERROR) << "CxlTransport::cxlMemcpy cudaMemcpy failed: "
+                       << cudaGetErrorString(st);
+            return -1;
+        }
+    } else {
+#endif
     std::memcpy(dest, src, size);
+#ifdef USE_CUDA
+    }
+#endif
 
     // Memory barriers and cache operations
     if (isAddressInCxlRange(dest) || isAddressInCxlRange(src)) {
@@ -137,7 +205,20 @@ bool CxlTransport::validateMemoryBounds(void *dest, void *src, size_t size) {
     uintptr_t dest_ptr = reinterpret_cast<uintptr_t>(dest);
     uintptr_t src_ptr = reinterpret_cast<uintptr_t>(src);
 
-    if (isAddressInCxlRange(dest)) {
+    bool dest_in_cxl = isAddressInCxlRange(dest);
+    bool src_in_cxl = isAddressInCxlRange(src);
+
+    // 至少有一端落在 CXL 的范围内
+    if (!dest_in_cxl && !src_in_cxl) {
+        LOG(ERROR) << "CxlTransport::validateMemoryBounds: neither src nor dest "
+                   << "is in CXL range; CXL transport requires at least one "
+                   << "operand in CXL.";
+        errno = EINVAL;
+        return false;
+    }
+
+    // 凡是落在 CXL 的一端, 必须边界合法
+    if (dest_in_cxl) {
         uintptr_t dest_end = dest_ptr + size;
         if (dest_end > end || dest_end < dest_ptr) {
             LOG(ERROR) << "CxlTransport::cxlMemcpy destination out of bounds.";
@@ -145,13 +226,29 @@ bool CxlTransport::validateMemoryBounds(void *dest, void *src, size_t size) {
         }
     }
 
-    if (isAddressInCxlRange(src)) {
+    if (src_in_cxl) {
         uintptr_t src_end = src_ptr + size;
         if (src_end > end || src_end < src_ptr) {
             LOG(ERROR) << "CxlTransport::cxlMemcpy source out of bounds.";
             return false;
         }
     }
+
+    // if (isAddressInCxlRange(dest)) {
+    //     uintptr_t dest_end = dest_ptr + size;
+    //     if (dest_end > end || dest_end < dest_ptr) {
+    //         LOG(ERROR) << "CxlTransport::cxlMemcpy destination out of bounds.";
+    //         return false;
+    //     }
+    // }
+
+    // if (isAddressInCxlRange(src)) {
+    //     uintptr_t src_end = src_ptr + size;
+    //     if (src_end > end || src_end < src_ptr) {
+    //         LOG(ERROR) << "CxlTransport::cxlMemcpy source out of bounds.";
+    //         return false;
+    //     }
+    // }
 
     return true;
 }
@@ -171,6 +268,54 @@ int CxlTransport::cxlDevInit() {
         LOG(ERROR) << "CxlTransport: cxl_dev_path or cxl_dev_size is null.";
         return -1;
     }
+
+    if (using_shm_) {
+        int fd = ::open(cxl_dev_path, O_RDWR | O_CREAT, 0660);
+        if (fd == -1) {
+            LOG(ERROR) << "CxlTransport: Cannot open shm file: " << cxl_dev_path
+                       << " err=" << strerror(errno);
+            return -1;
+        }
+
+        struct stat st{};
+        if (::fstat(fd, &st) == 0) {
+            if ((size_t)st.st_size != cxl_dev_size) {
+                if (::ftruncate(fd, (off_t)cxl_dev_size) != 0) {
+                    LOG(ERROR) << "CxlTransport: ftruncate failed: "
+                               << strerror(errno);
+                    return -1;
+                }
+            }
+        }
+        void *ptr = ::mmap(nullptr, cxl_dev_size,
+                           PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+        if (ptr == MAP_FAILED) {
+            LOG(ERROR) << "CxlTransport: mmap shm failed: " << strerror(errno);
+            
+            close(fd);
+            return ERR_MEMORY;
+        }
+        cxl_base_addr = ptr;
+        close(fd);
+
+#ifdef USE_CUDA
+        // Try to pin the CXL memory for better performance
+        cudaError_t err = cudaHostRegister(cxl_base_addr, cxl_dev_size, 0);
+        if (err != cudaSuccess) {
+            // 回退为 pageable memory
+            LOG(WARNING) << "cudaHostRegister failed (fallback to pageable): "
+                         << cudaGetErrorString(err)
+                         << ". You may increase 'ulimit -l' or reduce size.";
+            cudaGetLastError(); // clear the error
+        } else {
+            shm_pinned_ = true;
+            LOG(INFO) << "Pinned /dev/shm CXL mapping for CUDA DMA: size="
+                      << cxl_dev_size;
+        }
+#endif
+        return 0;
+    }
+
     int fd = open(cxl_dev_path, O_RDWR);
     if (fd == -1) {
         LOG(ERROR) << "CxlTransport: Cannot open cxl device."
@@ -330,12 +475,13 @@ Status CxlTransport::submitTransfer(
         slice->status = Slice::PENDING;
         __sync_fetch_and_add(&task.slice_count, 1);
         int err;
+        // Source is in local memory, Destination is on CXL
         if (slice->opcode == TransferRequest::READ)
-            // READ: Source is in local memory, Destination is on CXL
+            // READ: CXL -> local、dest -> source
             err = cxlMemcpy(slice->source_addr, (void *)slice->cxl.dest_addr,
                             slice->length);
         else
-            // WRITE: Source is in local memory, Destination is on CXL
+            // WRITE: local -> CXL、source -> dest
             err = cxlMemcpy((void *)slice->cxl.dest_addr, slice->source_addr,
                             slice->length);
         if (err != 0)
@@ -368,12 +514,13 @@ Status CxlTransport::submitTransferTask(
         task.slice_list.push_back(slice);
         __sync_fetch_and_add(&task.slice_count, 1);
         int err;
+        // Source is in local memory, Destination is on CXL
         if (slice->opcode == TransferRequest::READ)
-            // READ: Source is in local memory, Destination is on CXL
+            // READ: CXL -> local、dest -> source
             err = cxlMemcpy(slice->source_addr, (void *)slice->cxl.dest_addr,
                             slice->length);
         else
-            // WRITE: Source is in local memory, Destination is on CXL
+            // WRITE: local -> CXL、source -> dest
             err = cxlMemcpy((void *)slice->cxl.dest_addr, slice->source_addr,
                             slice->length);
         if (err != 0)
