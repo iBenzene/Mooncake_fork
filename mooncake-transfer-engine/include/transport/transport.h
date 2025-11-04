@@ -258,6 +258,10 @@ class Transport {
         size_t length;
     };
 
+    /// @brief Get the base address of the transport device (if applicable).
+    /// @return The base address pointer, or nullptr if not supported.
+    virtual void *getBaseAddr() { return nullptr; }
+
    protected:
     virtual int install(std::string &local_server_name,
                         std::shared_ptr<TransferMetadata> meta,

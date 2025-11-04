@@ -52,6 +52,8 @@ class CxlTransport : public Transport {
 
     void *getCxlBaseAddr() { return cxl_base_addr; }
 
+    void *getBaseAddr() override { return getCxlBaseAddr(); }
+
    private:
     int install(std::string &local_server_name,
                 std::shared_ptr<TransferMetadata> meta,

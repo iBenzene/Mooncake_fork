@@ -54,6 +54,12 @@ int uninstallTransport(transfer_engine_t engine, const char *proto) {
     return native->uninstallTransport(proto);
 }
 
+void *getTransportBaseAddr(transport_t transport) {
+    Transport *native = (Transport *)transport;
+    if (!native) return nullptr;
+    return native->getBaseAddr();
+}
+
 void destroyTransferEngine(transfer_engine_t engine) {
     TransferEngine *native = (TransferEngine *)engine;
     delete native;

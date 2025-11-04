@@ -112,6 +112,8 @@ transport_t installTransport(transfer_engine_t engine, const char *proto,
 
 int uninstallTransport(transfer_engine_t engine, const char *proto);
 
+void *getTransportBaseAddr(transport_t transport);
+
 segment_id_t openSegment(transfer_engine_t engine, const char *segment_name);
 
 segment_id_t openSegmentNoCache(transfer_engine_t engine,
