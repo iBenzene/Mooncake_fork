@@ -1,3 +1,17 @@
+// Copyright 2024 KVCache.AI
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 #include <gflags/gflags.h>
 #include <glog/logging.h>
 #include <gtest/gtest.h>
@@ -118,7 +132,7 @@ class SharedCXLVramTest : public ::testing::Test {
             if (st.s == mooncake::TransferStatusEnum::FAILED) {
                 FAIL() << "Transfer failed";
             }
-            // 自旋等待；可根据需要 sleep/yield
+            // 如需自旋等待, 可根据需要 sleep/yield
         }
     }
 };
@@ -146,7 +160,7 @@ TEST_F(SharedCXLVramTest, VRAM_Roundtrip_VRAM) {
                        "H2D"));
 
     for (int it = 0; it < FLAGS_iters; ++it) {
-        // WRITE: local(VRAM) -> CXL
+        // WRITE: local (VRAM) -> CXL
         auto bid_w = xport_->allocateBatchID(1);
         mooncake::TransferRequest w{};
         w.opcode        = mooncake::TransferRequest::WRITE;
@@ -159,7 +173,7 @@ TEST_F(SharedCXLVramTest, VRAM_Roundtrip_VRAM) {
         waitOne(bid_w, 0);
         ASSERT_EQ(xport_->freeBatchID(bid_w), mooncake::Status::OK());
 
-        // READ: CXL -> local(VRAM d_dst)
+        // READ: CXL -> local (VRAM d_dst)
         auto bid_r = xport_->allocateBatchID(1);
         mooncake::TransferRequest r{};
         r.opcode        = mooncake::TransferRequest::READ;
