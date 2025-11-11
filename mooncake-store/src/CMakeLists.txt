@@ -77,6 +77,7 @@ if (STORE_USE_ETCD)
 endif()
 
 install(TARGETS mooncake_master DESTINATION bin)
+install(TARGETS mooncake_store DESTINATION lib)
 
 # Install C API header
 install(FILES ../include/mooncake_store_c.h DESTINATION include)

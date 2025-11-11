@@ -11,3 +11,5 @@ target_link_libraries(mooncake_common PUBLIC
     yaml-cpp
     jsoncpp
 )
+
+install(TARGETS mooncake_common DESTINATION lib)
