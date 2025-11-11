@@ -24,6 +24,7 @@ set(MOONCAKE_STORE_SOURCES
     client_buffer.cpp
     pybind_client.cpp
     http_metadata_server.cpp
+    mooncake_store_c.cpp
 )
 
 set(EXTRA_LIBS "")
@@ -76,3 +77,6 @@ if (STORE_USE_ETCD)
 endif()
 
 install(TARGETS mooncake_master DESTINATION bin)
+
+# Install C API header
+install(FILES ../include/mooncake_store_c.h DESTINATION include)

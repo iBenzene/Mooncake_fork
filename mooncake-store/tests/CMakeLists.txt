@@ -49,3 +49,17 @@ target_link_libraries(stress_workload_test PUBLIC
     gflags
     pthread
 )
+
+# C API test (compilation test only)
+add_executable(mooncake_store_c_test mooncake_store_c_test.c)
+target_link_libraries(mooncake_store_c_test PUBLIC
+    mooncake_store
+    transfer_engine
+)
+
+# C API example (full functional test)
+add_executable(mooncake_store_c_example mooncake_store_c_example.c)
+target_link_libraries(mooncake_store_c_example PUBLIC
+    mooncake_store
+    transfer_engine
+)
